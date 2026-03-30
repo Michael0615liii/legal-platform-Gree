@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>观韬 · 团队工作平台</title>
+<link rel="manifest" href="/manifest.json">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { font-family: 'Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif; background: #f4f2ed; color: #1a1f2b; -webkit-font-smoothing: antialiased; }
+  #root { max-width: 480px; margin: 0 auto; min-height: 100vh; position: relative; }
+  input, textarea, select, button { font-family: inherit; }
+  ::-webkit-scrollbar { display: none; }
+
+  /* Loading */
+  .loading-wrap { display: flex; justify-content: center; align-items: center; padding: 60px 0; }
+  .loading-dot { width: 8px; height: 8px; border-radius: 50%; background: #b8944a; margin: 0 4px; animation: bounce 1.2s infinite; }
+  .loading-dot:nth-child(2) { animation-delay: 0.2s; }
+  .loading-dot:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes bounce { 0%,80%,100% { transform: scale(0.6); opacity: 0.3; } 40% { transform: scale(1); opacity: 1; } }
+
+  /* Toast */
+  .toast { position: fixed; top: 80px; left: 50%; transform: translateX(-50%); background: #1b3a5c; color: white; padding: 10px 24px; border-radius: 10px; font-size: 14px; font-weight: 600; z-index: 999; box-shadow: 0 4px 16px rgba(0,0,0,0.15); animation: fadeInOut 2.5s forwards; }
+  @keyframes fadeInOut { 0% { opacity: 0; transform: translateX(-50%) translateY(-10px); } 15% { opacity: 1; transform: translateX(-50%) translateY(0); } 85% { opacity: 1; } 100% { opacity: 0; } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+
+<script type="text/babel">
+const { useState, useEffect, useMemo, useCallback } = React;
+
+// ==================== API 层 ====================
+const API_BASE = "/api/feishu";
+
+async function api(path, method = "GET", body = null) {
+  const opts = { method, headers: { "Content-Type": "application/json" } };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(`${API_BASE}${path}`, opts);
+  if (!res.ok) throw new Error(`API错误: ${res.status}`);
+  return res.json();
+}
+
+// ==================== 常量 ====================
+const CATEGORIES = ["劳动人事", "公司治理", "合同纠纷", "知识产权", "合规风控", "房产物业", "财税相关", "其他"];
+const CASE_STATUS = ["待立案", "举证期", "待开庭", "庭后补充", "已结案", "中止/终止"];
+const TEAM_MEMBERS = ["李涵", "张伟", "王芳", "刘洋", "陈静", "赵磊", "周敏", "吴强", "孙丽", "黄鹏"];
+const NODE_LABELS = { "受案/立案": "📋", "举证期限": "📑", "证据交换": "🔄", "开庭": "⚖️", "庭后补充材料": "📤", "裁判/裁决": "📜" };
+
+// ==================== 工具函数 ====================
+const TODAY = new Date(); TODAY.setHours(0,0,0,0);
+const daysUntil = (d) => { if (!d) return null; const t = new Date(d.split(" ")[0]); return Math.ceil((t - TODAY) / 86400000); };
+const formatDateShort = (d) => { if (!d) return "待定"; const dt = new Date(d.split(" ")[0]); return `${dt.getMonth()+1}/${dt.getDate()}`; };
+const formatDateFull = (d) => { if (!d) return "待定"; const dt = new Date(d.split(" ")[0]); const time = d.split(" ")[1] || ""; return `${dt.getFullYear()}年${dt.getMonth()+1}月${dt.getDate()}日${time ? " " + time : ""}`; };
+const urgColor = (days) => { if (days === null) return "#7a8599"; if (days <= 3) return "#d64545"; if (days <= 7) return "#e08a2e"; return "#2d8f5e"; };
+
+// ==================== 主题 ====================
+const T = { bg:"#f4f2ed", card:"#ffffff", primary:"#1b3a5c", primaryL:"#2a5480", accent:"#b8944a", accentBg:"#b8944a0e", text:"#1a1f2b", sub:"#7a8599", border:"#e4ded4", red:"#d64545", orange:"#e08a2e", green:"#2d8f5e", blue:"#3574b8", radius:"14px" };
+const btn = { border:"none", borderRadius:"8px", padding:"10px 20px", fontSize:"14px", fontWeight:"600", cursor:"pointer", transition:"all 0.15s", fontFamily:"inherit" };
+
+// ==================== 通用组件 ====================
+function Loading() { return <div className="loading-wrap"><div className="loading-dot"/><div className="loading-dot"/><div className="loading-dot"/></div>; }
+
+function Toast({ message }) { return message ? <div className="toast">{message}</div> : null; }
+
+function Nav({ tab, go }) {
+  const tabs = [{k:"consult",icon:"📚",l:"知识库"},{k:"cases",icon:"⚖️",l:"案件"},{k:"board",icon:"📋",l:"看板"}];
+  return (
+    <div style={{position:"fixed",bottom:0,left:0,right:0,background:T.card,borderTop:`1px solid ${T.border}`,display:"flex",justifyContent:"space-around",padding:"6px 0 env(safe-area-inset-bottom,8px)",zIndex:100,boxShadow:"0 -2px 12px rgba(0,0,0,0.05)"}}>
+      {tabs.map(t=>(
+        <button key={t.k} onClick={()=>go(t.k)} style={{background:"none",border:"none",cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",gap:"2px",padding:"4px 20px",opacity:tab===t.k?1:0.4,transition:"all 0.15s",fontFamily:"inherit"}}>
+          <span style={{fontSize:"22px"}}>{t.icon}</span>
+          <span style={{fontSize:"11px",fontWeight:tab===t.k?"700":"500",color:tab===t.k?T.primary:T.sub,letterSpacing:"0.3px"}}>{t.l}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function Hdr({ title, sub, right }) {
+  return <div style={{padding:"20px 20px 14px",background:`linear-gradient(135deg,${T.primary} 0%,${T.primaryL} 100%)`,color:"white"}}>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+      <div><h1 style={{margin:0,fontSize:"21px",fontWeight:"800",letterSpacing:"-0.3px"}}>{title}</h1>{sub&&<p style={{margin:"3px 0 0",fontSize:"13px",opacity:0.7}}>{sub}</p>}</div>
+      {right}
+    </div>
+  </div>;
+}
+
+function Tag({t,c,s}) { return <span style={{display:"inline-block",padding:s?"2px 8px":"3px 10px",borderRadius:"6px",fontSize:s?"11px":"12px",fontWeight:"600",background:(c||T.accent)+"14",color:c||T.accent,border:`1px solid ${(c||T.accent)}28`,whiteSpace:"nowrap"}}>{t}</span>; }
+
+// ==================== 时间线组件 ====================
+function CaseTimeline({ timeline, onUpdate }) {
+  return <div style={{position:"relative",padding:"4px 0 0"}}>
+    {timeline.map((node,i) => {
+      const days = daysUntil(node.date);
+      const isLast = i === timeline.length - 1;
+      const st = node.status;
+      const stLabel = st==="done"?"✓ 已完成":st==="upcoming"?(days!==null?`还有 ${days} 天`:"即将到来"):"待定";
+      const stClr = st==="done"?T.green:st==="upcoming"?urgColor(days):T.sub;
+
+      return <div key={node.id||i} style={{display:"flex",gap:"14px",position:"relative",minHeight:isLast?"auto":"72px"}}>
+        <div style={{display:"flex",flexDirection:"column",alignItems:"center",width:"28px",flexShrink:0}}>
+          <div style={{width:st==="upcoming"?"28px":"22px",height:st==="upcoming"?"28px":"22px",borderRadius:"50%",background:st==="done"?T.green:st==="upcoming"?T.orange+"18":T.border,border:st==="upcoming"?`2.5px solid ${T.orange}`:st==="done"?"none":`2px solid ${T.sub}40`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:st==="done"?"11px":"12px",color:st==="done"?"white":st==="upcoming"?T.orange:T.sub,fontWeight:"700",flexShrink:0,zIndex:2,boxShadow:st==="upcoming"?`0 0 0 4px ${T.orange}10`:"none"}}>
+            {st==="done"?"✓":(NODE_LABELS[node.key]||"·")}
+          </div>
+          {!isLast && <div style={{width:"2px",flex:1,minHeight:"20px",background:st==="done"?T.green+"40":T.border}}/>}
+        </div>
+        <div style={{flex:1,paddingBottom:isLast?"0":"12px",paddingTop:st==="upcoming"?"2px":"0"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <span style={{fontSize:"14px",fontWeight:"700",color:st==="pending"?T.sub:T.text}}>{node.label||node.key}</span>
+            <div style={{display:"flex",alignItems:"center",gap:"6px"}}>
+              <span style={{fontSize:"11px",fontWeight:"600",color:stClr}}>{stLabel}</span>
+              {st!=="done"&&onUpdate && <button onClick={(e)=>{e.stopPropagation();onUpdate(node.id,"done")}} style={{...btn,padding:"2px 8px",fontSize:"10px",background:T.green+"15",color:T.green,border:`1px solid ${T.green}30`}}>✓</button>}
+            </div>
+          </div>
+          <div style={{marginTop:"3px"}}>
+            <span style={{fontSize:"13px",color:node.date?T.text:T.sub+"80",fontWeight:"500"}}>{node.date?formatDateFull(node.date):"待确定"}</span>
+          </div>
+          {node.note && <p style={{margin:"3px 0 0",fontSize:"12px",color:T.sub,lineHeight:"1.4"}}>{node.note}</p>}
+          {st==="upcoming"&&days!==null&&days<=7 && <div style={{marginTop:"6px",padding:"6px 10px",borderRadius:"8px",background:urgColor(days)+"10",border:`1px solid ${urgColor(days)}20`,fontSize:"12px",color:urgColor(days),fontWeight:"600"}}>
+            ⚠️ {days<=0?"已到期！":days<=3?`仅剩 ${days} 天`:`${days} 天后截止`}
+          </div>}
+        </div>
+      </div>;
+    })}
+  </div>;
+}
+
+// ==================== 咨询知识库 ====================
+function Consult({ toast }) {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [cat, setCat] = useState("全部");
+  const [adding, setAdding] = useState(false);
+  const [expanded, setExpanded] = useState(null);
+  const [form, setForm] = useState({category:"劳动人事",question:"",answer:""});
+  const [saving, setSaving] = useState(false);
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (cat !== "全部") params.set("category", cat);
+      if (search) params.set("search", search);
+      const data = await api(`/consults?${params}`);
+      setItems(data.items || []);
+    } catch(e) { console.error(e); }
+    setLoading(false);
+  }, [cat, search]);
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  const save = async () => {
+    if (!form.question.trim()||!form.answer.trim()) return;
+    setSaving(true);
+    try {
+      await api("/consults", "POST", {...form, author:"李涵"});
+      toast("✅ 已保存到知识库");
+      setForm({category:"劳动人事",question:"",answer:""});
+      setAdding(false);
+      loadData();
+    } catch(e) { toast("❌ 保存失败"); }
+    setSaving(false);
+  };
+
+  if (adding) return <div>
+    <Hdr title="新增咨询" sub="录入问答，沉淀知识" right={<button onClick={()=>setAdding(false)} style={{...btn,background:"rgba(255,255,255,0.15)",color:"white",padding:"6px 14px",fontSize:"13px"}}>取消</button>}/>
+    <div style={{padding:"16px 20px 100px"}}>
+      <div style={{marginBottom:"14px"}}>
+        <label style={{display:"block",fontSize:"13px",fontWeight:"600",color:T.sub,marginBottom:"6px"}}>法律领域</label>
+        <div style={{display:"flex",flexWrap:"wrap",gap:"6px"}}>
+          {CATEGORIES.map(c=><button key={c} onClick={()=>setForm(p=>({...p,category:c}))} style={{...btn,padding:"5px 12px",fontSize:"12px",background:form.category===c?T.primary:T.card,color:form.category===c?"white":T.text,border:`1px solid ${form.category===c?T.primary:T.border}`}}>{c}</button>)}
+        </div>
+      </div>
+      <div style={{marginBottom:"14px"}}>
+        <label style={{display:"block",fontSize:"13px",fontWeight:"600",color:T.sub,marginBottom:"4px"}}>客户问题</label>
+        <textarea value={form.question} onChange={e=>setForm(p=>({...p,question:e.target.value}))} placeholder="输入客户咨询的问题..." style={{width:"100%",minHeight:"80px",padding:"12px",borderRadius:T.radius,border:`1px solid ${T.border}`,fontSize:"14px",fontFamily:"inherit",resize:"vertical",boxSizing:"border-box",lineHeight:"1.6"}}/>
+      </div>
+      <div style={{marginBottom:"24px"}}>
+        <label style={{display:"block",fontSize:"13px",fontWeight:"600",color:T.sub,marginBottom:"4px"}}>我方回复</label>
+        <textarea value={form.answer} onChange={e=>setForm(p=>({...p,answer:e.target.value}))} placeholder="输入答复内容..." style={{width:"100%",minHeight:"100px",padding:"12px",borderRadius:T.radius,border:`1px solid ${T.border}`,fontSize:"14px",fontFamily:"inherit",resize:"vertical",boxSizing:"border-box",lineHeight:"1.6"}}/>
+      </div>
+      <button onClick={save} disabled={saving} style={{...btn,width:"100%",padding:"14px",background:saving?"#ccc":T.primary,color:"white",fontSize:"16px"}}>{saving?"保存中...":"保存"}</button>
+    </div>
+  </div>;
+
+  return <div>
+    <Hdr title="咨询知识库" sub={`${items.length} 条记录`} right={<button onClick={()=>setAdding(true)} style={{...btn,background:T.accent,color:"white",padding:"8px 16px",fontSize:"13px"}}>+ 新增</button>}/>
+    <div style={{padding:"12px 20px"}}>
+      <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="🔍 搜索关键词..." style={{width:"100%",padding:"10px 14px",borderRadius:"10px",border:`1px solid ${T.border}`,fontSize:"14px",fontFamily:"inherit",background:T.card,boxSizing:"border-box"}}/>
+    </div>
+    <div style={{padding:"0 20px 8px",display:"flex",gap:"6px",overflowX:"auto",scrollbarWidth:"none"}}>
+      {["全部",...CATEGORIES].map(c=><button key={c} onClick={()=>setCat(c)} style={{...btn,padding:"5px 12px",fontSize:"12px",borderRadius:"20px",flexShrink:0,background:cat===c?T.primary:T.card,color:cat===c?"white":T.sub,border:`1px solid ${cat===c?T.primary:T.border}`}}>{c}</button>)}
+    </div>
+    <div style={{padding:"8px 20px 100px"}}>
+      {loading ? <Loading/> : items.length===0 ? <div style={{textAlign:"center",padding:"40px 0",color:T.sub}}>暂无匹配记录</div> :
+      items.map(c=><div key={c.id} onClick={()=>setExpanded(expanded===c.id?null:c.id)} style={{background:T.card,borderRadius:T.radius,padding:"14px 16px",marginBottom:"10px",cursor:"pointer",border:`1px solid ${expanded===c.id?T.accent+"40":T.border}`,boxShadow:expanded===c.id?`0 2px 10px ${T.accent}10`:"0 1px 3px rgba(0,0,0,0.03)",transition:"all 0.15s"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:"6px"}}>
+          <Tag t={c.category} s/><span style={{fontSize:"12px",color:T.sub}}>{c.date}</span>
+        </div>
+        <p style={{margin:"6px 0 0",fontSize:"14px",fontWeight:"600",color:T.text,lineHeight:"1.5"}}>{c.question}</p>
+        {expanded===c.id ? <div style={{marginTop:"10px",paddingTop:"10px",borderTop:`1px dashed ${T.border}`}}>
+          <p style={{margin:0,fontSize:"13px",color:T.text,lineHeight:"1.8",whiteSpace:"pre-wrap"}}>{c.answer}</p>
+          <p style={{margin:"8px 0 0",fontSize:"12px",color:T.sub}}>回复人：{c.author}</p>
+        </div> : <p style={{margin:"4px 0 0",fontSize:"12px",color:T.sub,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{(c.answer||"").slice(0,50)}...</p>}
+      </div>)}
+    </div>
+  </div>;
+}
+
+// ==================== 案件详情 ====================
+function CaseDetail({ c, onBack, onUpdateNode, toast }) {
+  const [activeTab, setActiveTab] = useState("timeline");
+  const nextEvent = c.timeline?.find(n=>n.status==="upcoming");
+  const nextDays = nextEvent ? daysUntil(nextEvent.date) : null;
+
+  return <div>
+    <Hdr title="案件详情" right={<button onClick={onBack} style={{...btn,background:"rgba(255,255,255,0.15)",color:"white",padding:"6px 14px",fontSize:"13px"}}>← 返回</button>}/>
+    <div style={{padding:"16px 20px 100px"}}>
+      <div style={{background:T.card,borderRadius:T.radius,padding:"18px",border:`1px solid ${T.border}`,marginBottom:"12px"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"10px"}}>
+          <Tag t={c.status} c={c.status==="待开庭"?T.orange:c.status==="举证期"?T.red:c.status==="庭后补充"?T.blue:c.status==="已结案"?T.sub:T.green}/>
+          <Tag t={c.caseType||"诉讼"} c={T.primaryL} s/>
+        </div>
+        <h2 style={{margin:"0 0 3px",fontSize:"15px",color:T.primary,fontWeight:"700"}}>{c.caseNo}</h2>
+        <p style={{margin:"0 0 12px",fontSize:"14px",color:T.text}}>{c.parties}</p>
+        <div style={{display:"flex",gap:"6px",flexWrap:"wrap",marginBottom:"12px"}}>
+          <span style={{padding:"3px 10px",borderRadius:"16px",fontSize:"12px",fontWeight:"600",background:`${T.primary}10`,color:T.primary,border:`1px solid ${T.primary}20`}}>主办：{c.owner}</span>
+          {(c.assistants||[]).map(a=><span key={a} style={{padding:"3px 10px",borderRadius:"16px",fontSize:"12px",background:`${T.accent}10`,color:T.accent,border:`1px solid ${T.accent}20`}}>{a}</span>)}
+        </div>
+        {nextEvent&&nextDays!==null && <div style={{padding:"12px 14px",borderRadius:"10px",background:urgColor(nextDays)+"08",border:`1.5px solid ${urgColor(nextDays)}25`,display:"flex",alignItems:"center",gap:"12px"}}>
+          <div style={{width:"46px",height:"46px",borderRadius:"12px",background:urgColor(nextDays)+"15",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+            <span style={{fontSize:"18px",fontWeight:"800",color:urgColor(nextDays),lineHeight:1}}>{nextDays<=0?"!":nextDays}</span>
+            <span style={{fontSize:"9px",color:urgColor(nextDays),fontWeight:"600"}}>{nextDays<=0?"过期":"天"}</span>
+          </div>
+          <div><p style={{margin:0,fontSize:"13px",fontWeight:"700",color:T.text}}>下一节点：{nextEvent.label||nextEvent.key}</p><p style={{margin:"2px 0 0",fontSize:"12px",color:T.sub}}>{formatDateFull(nextEvent.date)}</p></div>
+        </div>}
+      </div>
+
+      <div style={{display:"flex",gap:"4px",marginBottom:"12px",background:T.border+"60",borderRadius:"10px",padding:"3px"}}>
+        {[["timeline","📅 时间线"],["info","📋 基本信息"]].map(([k,l])=><button key={k} onClick={()=>setActiveTab(k)} style={{...btn,flex:1,padding:"8px",fontSize:"13px",borderRadius:"8px",background:activeTab===k?T.card:"transparent",color:activeTab===k?T.primary:T.sub,boxShadow:activeTab===k?"0 1px 4px rgba(0,0,0,0.06)":"none"}}>{l}</button>)}
+      </div>
+
+      {activeTab==="timeline" && <div style={{background:T.card,borderRadius:T.radius,padding:"18px",border:`1px solid ${T.border}`}}>
+        <h3 style={{margin:"0 0 16px",fontSize:"15px",fontWeight:"700",color:T.primary}}>案件进程</h3>
+        <CaseTimeline timeline={c.timeline||[]} onUpdate={onUpdateNode}/>
+        <div style={{display:"flex",gap:"16px",marginTop:"18px",paddingTop:"14px",borderTop:`1px solid ${T.border}`}}>
+          {[["已完成",T.green],["即将到来",T.orange],["待定",T.sub]].map(([l,color])=><div key={l} style={{display:"flex",alignItems:"center",gap:"5px"}}><div style={{width:"8px",height:"8px",borderRadius:"50%",background:color}}/><span style={{fontSize:"11px",color:T.sub}}>{l}</span></div>)}
+        </div>
+      </div>}
+
+      {activeTab==="info" && <div style={{background:T.card,borderRadius:T.radius,padding:"18px",border:`1px solid ${T.border}`}}>
+        {[["👨‍⚖️ 法官/仲裁员",c.judge],["📞 联系电话",c.judgPhone],["🏛️ 审理机关",c.court],["📍 开庭地点",c.hearingPlace],["👤 主办律师",c.owner],["👥 协办律师",(c.assistants||[]).join("、")||"无"],["📂 案件类型",c.caseType||"诉讼"]].map(([label,val],i,arr)=>
+          <div key={label} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"11px 0",borderBottom:i<arr.length-1?`1px solid ${T.border}`:"none"}}>
+            <span style={{fontSize:"13px",color:T.sub}}>{label}</span>
+            <span style={{fontSize:"13px",color:T.text,fontWeight:"500",textAlign:"right",maxWidth:"60%"}}>{val}</span>
+          </div>
+        )}
+        {c.notes && <div style={{marginTop:"14px",padding:"12px",borderRadius:"10px",background:T.accentBg,border:`1px solid ${T.accent}15`}}>
+          <p style={{margin:0,fontSize:"12px",color:T.accent,fontWeight:"600",marginBottom:"4px"}}>📝 备注</p>
+          <p style={{margin:0,fontSize:"13px",color:T.text,lineHeight:"1.6"}}>{c.notes}</p>
+        </div>}
+      </div>}
+    </div>
+  </div>;
+}
+
+// ==================== 新建案件 ====================
+function AddCase({ onSave, onCancel, saving }) {
+  const [c, setC] = useState({caseNo:"",parties:"",judge:"",judgPhone:"",court:"",hearingPlace:"",owner:"李涵",assistants:[],status:"待立案",caseType:"诉讼",notes:"",acceptedDate:"",hearingDate:""});
+
+  const toggleAst = (name) => setC(p=>({...p,assistants:p.assistants.includes(name)?p.assistants.filter(a=>a!==name):[...p.assistants,name]}));
+
+  const addDaysStr = (d,n) => { if(!d)return""; const dt=new Date(d); dt.setDate(dt.getDate()+n); return dt.toISOString().split("T")[0]; };
+
+  return <div>
+    <Hdr title="新建案件" sub="录入案件信息，自动生成时间线" right={<button onClick={onCancel} style={{...btn,background:"rgba(255,255,255,0.15)",color:"white",padding:"6px 14px",fontSize:"13px"}}>取消</button>}/>
+    <div style={{padding:"16px 20px 100px"}}>
+      {[["案件号 *","caseNo","（2026）粤04民初____号"],["当事人","parties","原告 vs 被告"],["法官/仲裁员","judge",""],["联系电话","judgPhone",""],["审理机关","court",""],["开庭地点","hearingPlace",""]].map(([l,k,ph])=>
+        <div key={k} style={{marginBottom:"12px"}}>
+          <label style={{display:"block",fontSize:"13px",fontWeight:"600",color:T.sub,marginBottom:"4px"}}>{l}</label>
+          <input value={c[k]} onChange={e=>setC(p=>({...p,[k]:e.target.value}))} placeholder={ph} style={{width:"100%",padding:"10px 12px",borderRadius:"8px",border:`1px solid ${T.border}`,fontSize:"14px",fontFamily:"inherit",boxSizing:"border-box"}}/>
+        </div>
+      )}
+
+      <div style={{background:`${T.blue}06`,borderRadius:"10px",padding:"14px",marginBottom:"12px",border:`1px solid ${T.blue}15`}}>
+        <p style={{margin:"0 0 10px",fontSize:"13px",fontWeight:"600",color:T.blue}}>⏱ 关键时间节点</p>
+        <div style={{marginBottom:"10px"}}>
+          <label style={{display:"block",fontSize:"12px",fontWeight:"600",color:T.sub,marginBottom:"3px"}}>受案/立案日期</label>
+          <input type="date" value={c.acceptedDate} onChange={e=>setC(p=>({...p,acceptedDate:e.target.value}))} style={{width:"100%",padding:"10px 12px",borderRadius:"8px",border:`1px solid ${T.border}`,fontSize:"14px",fontFamily:"inherit",boxSizing:"border-box"}}/>
+          {c.acceptedDate && <p style={{margin:"4px 0 0",fontSize:"12px",color:T.green}}>→ 举证期限：{formatDateFull(addDaysStr(c.acceptedDate,15))}</p>}
+        </div>
+        <div>
+          <label style={{display:"block",fontSize:"12px",fontWeight:"600",color:T.sub,marginBottom:"3px"}}>开庭时间</label>
+          <input type="datetime-local" value={c.hearingDate} onChange={e=>setC(p=>({...p,hearingDate:e.target.value}))} style={{width:"100%",padding:"10px 12px",borderRadius:"8px",border:`1px solid ${T.border}`,fontSize:"14px",fontFamily:"inherit",boxSizing:"border-box"}}/>
+          {c.hearingDate && <p style={{margin:"4px 0 0",fontSize:"12px",color:T.green}}>→ 庭后补充截止：{formatDateFull(addDaysStr(c.hearingDate,3))}</p>}
+        </div>
+      </div>
+
+      <div style={{marginBottom:"12px"}}>
+        <label style={{display:"block",fontSize:"13px",fontWeight:"600",color:T.sub,marginBottom:"4px"}}>案件类型</label>
+        <div style={{display:"flex",gap:"6px"}}>
+          {["诉讼","仲裁","执行","其他"].map(t=><button key={t} onClick={()=>setC(p=>({...p,caseType:t}))} style={{...btn,padding:"6px 16px",fontSize:"13px",background:c.caseType===t?T.primary:T.card,color:c.caseType===t?"white":T.text,border:`1px solid ${c.caseType===t?T.primary:T.border}`}}>{t}</button>)}
+        </div>
+      </div>
+
+      <div style={{marginBottom:"12px"}}>
+        <label style={{display:"block",fontSize:"13px",fontWeight:"600",color:T.sub,marginBottom:"4px"}}>主办律师</label>
+        <div style={{display:"flex",flexWrap:"wrap",gap:"6px"}}>
+          {TEAM_MEMBERS.map(m=><button key={m} onClick={()=>setC(p=>({...p,owner:m}))} style={{...btn,padding:"5px 12px",fontSize:"12px",background:c.owner===m?T.primary:T.card,color:c.owner===m?"white":T.text,border:`1px solid ${c.owner===m?T.primary:T.border}`}}>{m}</button>)}
+        </div>
+      </div>
+
+      <div style={{marginBottom:"12px"}}>
+        <label style={{display:"block",fontSize:"13px",fontWeight:"600",color:T.sub,marginBottom:"4px"}}>协办律师（可多选）</label>
+        <div style={{display:"flex",flexWrap:"wrap",gap:"6px"}}>
+          {TEAM_MEMBERS.filter(m=>m!==c.owner).map(m=><button key={m} onClick={()=>toggleAst(m)} style={{...btn,padding:"5px 12px",fontSize:"12px",background:c.assistants.includes(m)?T.accent:T.card,color:c.assistants.includes(m)?"white":T.text,border:`1px solid ${c.assistants.includes(m)?T.accent:T.border}`}}>{m}</button>)}
+        </div>
+      </div>
+
+      <div style={{marginBottom:"12px"}}>
+        <label style={{display:"block",fontSize:"13px",fontWeight:"600",color:T.sub,marginBottom:"4px"}}>案件状态</label>
+        <div style={{display:"flex",flexWrap:"wrap",gap:"6px"}}>
+          {CASE_STATUS.map(s=><button key={s} onClick={()=>setC(p=>({...p,status:s}))} style={{...btn,padding:"5px 12px",fontSize:"12px",background:c.status===s?T.primary:T.card,color:c.status===s?"white":T.text,border:`1px solid ${c.status===s?T.primary:T.border}`}}>{s}</button>)}
+        </div>
+      </div>
+
+      <div style={{marginBottom:"24px"}}>
+        <label style={{display:"block",fontSize:"13px",fontWeight:"600",color:T.sub,marginBottom:"4px"}}>备注</label>
+        <textarea value={c.notes} onChange={e=>setC(p=>({...p,notes:e.target.value}))} placeholder="案件要点、策略备注..." style={{width:"100%",minHeight:"60px",padding:"10px 12px",borderRadius:"8px",border:`1px solid ${T.border}`,fontSize:"14px",fontFamily:"inherit",resize:"vertical",boxSizing:"border-box"}}/>
+      </div>
+
+      <button onClick={()=>onSave(c)} disabled={saving||!c.caseNo.trim()} style={{...btn,width:"100%",padding:"14px",background:(saving||!c.caseNo.trim())?"#ccc":T.primary,color:"white",fontSize:"16px"}}>{saving?"创建中...":"创建案件"}</button>
+    </div>
+  </div>;
+}
+
+// ==================== 案件列表 ====================
+function CaseList({ cases, loading, onSelect, onAdd }) {
+  const [filterStatus, setFilterStatus] = useState("全部");
+  const filtered = useMemo(()=>cases.filter(c=>filterStatus==="全部"||c.status===filterStatus),[cases,filterStatus]);
+
+  return <div>
+    <Hdr title="案件管理" sub={`${cases.length} 件案件`} right={<button onClick={onAdd} style={{...btn,background:T.accent,color:"white",padding:"8px 16px",fontSize:"13px"}}>+ 建案</button>}/>
+    <div style={{padding:"12px 20px 4px",display:"flex",gap:"6px",overflowX:"auto",scrollbarWidth:"none"}}>
+      {["全部",...CASE_STATUS].map(s=><button key={s} onClick={()=>setFilterStatus(s)} style={{...btn,padding:"5px 12px",fontSize:"12px",borderRadius:"20px",flexShrink:0,background:filterStatus===s?T.primary:T.card,color:filterStatus===s?"white":T.sub,border:`1px solid ${filterStatus===s?T.primary:T.border}`}}>{s}</button>)}
+    </div>
+    <div style={{padding:"8px 20px 100px"}}>
+      {loading ? <Loading/> : filtered.map(c=>{
+        const next = c.timeline?.find(n=>n.status==="upcoming");
+        const nextDays = next?daysUntil(next.date):null;
+        const nextLabel = next?(next.label||next.key):null;
+        const progress = c.timeline?c.timeline.filter(n=>n.status==="done").length/c.timeline.length:0;
+
+        return <div key={c.id} onClick={()=>onSelect(c.id)} style={{background:T.card,borderRadius:T.radius,padding:"14px 16px",marginBottom:"10px",cursor:"pointer",border:`1px solid ${T.border}`,boxShadow:"0 1px 3px rgba(0,0,0,0.03)",transition:"all 0.15s"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"6px"}}>
+            <Tag t={c.status} c={c.status==="待开庭"?T.orange:c.status==="举证期"?T.red:c.status==="庭后补充"?T.blue:c.status==="已结案"?T.sub:T.green} s/>
+            {nextDays!==null && <span style={{fontSize:"11px",fontWeight:"600",color:urgColor(nextDays)}}>{nextLabel} · {nextDays<=0?"已到期":`${nextDays}天后`}</span>}
+          </div>
+          <p style={{margin:"0 0 2px",fontSize:"13px",fontWeight:"700",color:T.primary}}>{c.caseNo}</p>
+          <p style={{margin:"0 0 8px",fontSize:"13px",color:T.text}}>{c.parties}</p>
+          <div style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"6px"}}>
+            <div style={{flex:1,height:"4px",borderRadius:"2px",background:T.border}}>
+              <div style={{height:"100%",borderRadius:"2px",width:`${progress*100}%`,background:T.green,transition:"width 0.3s"}}/>
+            </div>
+            <span style={{fontSize:"11px",color:T.sub,flexShrink:0}}>{c.timeline?.filter(n=>n.status==="done").length||0}/{c.timeline?.length||0}</span>
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <span style={{fontSize:"12px",color:T.sub}}>👤 {c.owner} {(c.assistants||[]).length>0?`+${c.assistants.length}`:""}</span>
+            <span style={{fontSize:"11px",color:T.sub}}>{(c.court||"").slice(0,8)}</span>
+          </div>
+        </div>;
+      })}
+    </div>
+  </div>;
+}
+
+// ==================== 看板 ====================
+function Board({ goCase, toast }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(()=>{
+    api("/dashboard").then(d=>{setData(d);setLoading(false);}).catch(()=>setLoading(false));
+  },[]);
+
+  if (loading||!data) return <div><Hdr title="团队看板"/><Loading/></div>;
+
+  return <div>
+    <Hdr title="团队看板" sub={`${data.totalActive} 件进行中`}/>
+    <div style={{padding:"16px 20px 100px"}}>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"8px",marginBottom:"14px"}}>
+        {[{l:"举证期",v:data.statusCounts["举证期"]||0,c:T.red},{l:"待开庭",v:data.statusCounts["待开庭"]||0,c:T.orange},{l:"庭后补充",v:data.statusCounts["庭后补充"]||0,c:T.blue}].map(s=>
+          <div key={s.l} style={{background:T.card,borderRadius:T.radius,padding:"14px 10px",textAlign:"center",border:`1px solid ${T.border}`}}>
+            <p style={{margin:0,fontSize:"26px",fontWeight:"800",color:s.c}}>{s.v}</p>
+            <p style={{margin:"2px 0 0",fontSize:"11px",color:T.sub,fontWeight:"500"}}>{s.l}</p>
+          </div>
+        )}
+      </div>
+
+      <div style={{background:T.card,borderRadius:T.radius,padding:"16px",border:`1px solid ${T.border}`,marginBottom:"14px"}}>
+        <h3 style={{margin:"0 0 14px",fontSize:"15px",fontWeight:"700",color:T.primary}}>📅 即将到来的节点</h3>
+        {(data.upcoming||[]).length===0 && <p style={{color:T.sub,fontSize:"13px"}}>暂无待办节点</p>}
+        {(data.upcoming||[]).slice(0,8).map((e,i)=>
+          <div key={i} onClick={()=>goCase(e.caseId)} style={{display:"flex",gap:"12px",padding:"10px 0",cursor:"pointer",borderBottom:i<Math.min((data.upcoming||[]).length,8)-1?`1px solid ${T.border}`:"none"}}>
+            <div style={{width:"42px",height:"42px",borderRadius:"10px",flexShrink:0,background:urgColor(e.days)+"10",border:`1.5px solid ${urgColor(e.days)}25`,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}>
+              <span style={{fontSize:"15px",fontWeight:"800",color:urgColor(e.days),lineHeight:1}}>{e.days}</span>
+              <span style={{fontSize:"9px",color:urgColor(e.days),fontWeight:"600"}}>天</span>
+            </div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{display:"flex",alignItems:"center",gap:"6px",marginBottom:"2px"}}>
+                <Tag t={e.event} c={e.nodeKey==="开庭"?T.orange:e.nodeKey==="举证期限"?T.red:T.blue} s/>
+                <span style={{fontSize:"12px",color:T.sub}}>{formatDateShort(e.date)}</span>
+              </div>
+              <p style={{margin:"2px 0 0",fontSize:"13px",color:T.text,fontWeight:"500",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{e.parties}</p>
+              <p style={{margin:"1px 0 0",fontSize:"11px",color:T.sub}}>👤 {e.owner}</p>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div style={{background:T.card,borderRadius:T.radius,padding:"16px",border:`1px solid ${T.border}`}}>
+        <h3 style={{margin:"0 0 14px",fontSize:"15px",fontWeight:"700",color:T.primary}}>👥 律师工作量</h3>
+        {(data.workload||[]).map((m,i)=>
+          <div key={m.name} style={{display:"flex",alignItems:"center",gap:"12px",padding:"8px 0",borderBottom:i<(data.workload||[]).length-1?`1px solid ${T.border}`:"none"}}>
+            <div style={{width:"34px",height:"34px",borderRadius:"50%",background:`${T.primary}${m.name==="李涵"?"20":"10"}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"13px",fontWeight:"700",color:T.primary,flexShrink:0}}>{m.name[0]}</div>
+            <div style={{flex:1}}>
+              <div style={{display:"flex",justifyContent:"space-between",marginBottom:"4px"}}>
+                <span style={{fontSize:"13px",fontWeight:"600",color:T.text}}>{m.name}</span>
+                <span style={{fontSize:"12px",color:T.sub}}>{m.owned}主办 · {m.assisted}协办</span>
+              </div>
+              <div style={{height:"5px",borderRadius:"3px",background:`${T.primary}08`,overflow:"hidden"}}>
+                <div style={{height:"100%",borderRadius:"3px",width:`${Math.min(m.total*25,100)}%`,background:m.total>=3?T.red:m.total>=2?T.orange:T.green,transition:"width 0.4s"}}/>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  </div>;
+}
+
+// ==================== 主应用 ====================
+function App() {
+  const [tab, setTab] = useState("board");
+  const [cases, setCases] = useState([]);
+  const [casesLoading, setCasesLoading] = useState(false);
+  const [selCase, setSelCase] = useState(null);
+  const [adding, setAdding] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [toastMsg, setToastMsg] = useState("");
+
+  const toast = (msg) => { setToastMsg(msg); setTimeout(()=>setToastMsg(""),2500); };
+  const go = (t) => { setTab(t); setSelCase(null); setAdding(false); };
+  const goCase = (id) => { setSelCase(id); setTab("cases"); };
+
+  // 加载案件
+  const loadCases = useCallback(async () => {
+    setCasesLoading(true);
+    try {
+      const data = await api("/cases");
+      setCases(data.cases || []);
+    } catch(e) { console.error(e); }
+    setCasesLoading(false);
+  }, []);
+
+  useEffect(() => { if (tab === "cases") loadCases(); }, [tab, loadCases]);
+
+  // 创建案件
+  const handleCreateCase = async (c) => {
+    setSaving(true);
+    try {
+      await api("/cases", "POST", c);
+      toast("✅ 案件已创建");
+      setAdding(false);
+      loadCases();
+    } catch(e) { toast("❌ 创建失败"); }
+    setSaving(false);
+  };
+
+  // 更新节点状态
+  const handleUpdateNode = async (nodeId, newStatus) => {
+    try {
+      const caseObj = cases.find(c=>c.id===selCase);
+      await api(`/cases/${selCase}/timeline/${nodeId}`, "PUT", { status: newStatus });
+      toast("✅ 节点已更新");
+      loadCases();
+    } catch(e) { toast("❌ 更新失败"); }
+  };
+
+  const selectedCaseObj = cases.find(c=>c.id===selCase);
+
+  return <div id="root" style={{maxWidth:"480px",margin:"0 auto",minHeight:"100vh",position:"relative",background:T.bg}}>
+    <Toast message={toastMsg}/>
+
+    {tab==="consult" && <Consult toast={toast}/>}
+    {tab==="cases" && (
+      adding ? <AddCase onSave={handleCreateCase} onCancel={()=>setAdding(false)} saving={saving}/> :
+      selCase && selectedCaseObj ? <CaseDetail c={selectedCaseObj} onBack={()=>setSelCase(null)} onUpdateNode={handleUpdateNode} toast={toast}/> :
+      <CaseList cases={cases} loading={casesLoading} onSelect={setSelCase} onAdd={()=>setAdding(true)}/>
+    )}
+    {tab==="board" && <Board goCase={goCase} toast={toast}/>}
+
+    <Nav tab={tab} go={go}/>
+  </div>;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
