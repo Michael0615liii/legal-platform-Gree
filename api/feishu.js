@@ -144,7 +144,20 @@ module.exports = async (req, res) => {
         return res.json({ ok: false, error: e.message });
       }
     }
-
+// ====== 调试字段 ======
+    if (path === "/debug-fields") {
+      try {
+        const results = {};
+        for (const [name, tableId] of [["consults", TABLE_CONSULTS], ["cases", TABLE_CASES], ["timeline", TABLE_TIMELINE]]) {
+          if (!tableId) { results[name] = "未配置"; continue; }
+          const r = await feishuRequest(`/bitable/v1/apps/${BITABLE_APP_TOKEN}/tables/${tableId}/fields`);
+          results[name] = (r.data?.items || []).map(f => ({ name: f.field_name, type: f.type }));
+        }
+        return res.json(results);
+      } catch (e) {
+        return res.json({ error: e.message });
+      }
+    }
     // ====== 咨询 ======
     if (path === "/consults" && req.method === "GET") {
       const category = params.get("category");
