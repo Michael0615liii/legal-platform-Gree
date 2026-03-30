@@ -135,29 +135,22 @@ module.exports = async (req, res) => {
       return res.status(500).json({ error: "飞书配置缺失，请检查Vercel环境变量: FEISHU_APP_ID, FEISHU_APP_SECRET, BITABLE_APP_TOKEN" });
     }
 
-    // ====== 调试 ======
-    if (path === "/debug") {
+// ====== 调试 ======
+    if (path === "/debug" || path === "/debug-fields") {
       try {
         const token = await getToken();
-        return res.json({ ok: true, tables: { TABLE_CONSULTS, TABLE_CASES, TABLE_TIMELINE } });
+        const fields = {};
+        for (const [name, tid] of [["consults", TABLE_CONSULTS], ["cases", TABLE_CASES], ["timeline", TABLE_TIMELINE]]) {
+          if (!tid) { fields[name] = "未配置"; continue; }
+          const r = await feishuRequest("/bitable/v1/apps/" + BITABLE_APP_TOKEN + "/tables/" + tid + "/fields");
+          fields[name] = (r.data?.items || []).map(function(f) { return f.field_name; });
+        }
+        return res.json({ ok: true, tables: { TABLE_CONSULTS, TABLE_CASES, TABLE_TIMELINE }, fields: fields });
       } catch (e) {
         return res.json({ ok: false, error: e.message });
       }
     }
-// ====== 调试字段 ======
-    if (path === "/debug-fields") {
-      try {
-        const results = {};
-        for (const [name, tableId] of [["consults", TABLE_CONSULTS], ["cases", TABLE_CASES], ["timeline", TABLE_TIMELINE]]) {
-          if (!tableId) { results[name] = "未配置"; continue; }
-          const r = await feishuRequest(`/bitable/v1/apps/${BITABLE_APP_TOKEN}/tables/${tableId}/fields`);
-          results[name] = (r.data?.items || []).map(f => ({ name: f.field_name, type: f.type }));
-        }
-        return res.json(results);
-      } catch (e) {
-        return res.json({ error: e.message });
-      }
-    }
+
     // ====== 咨询 ======
     if (path === "/consults" && req.method === "GET") {
       const category = params.get("category");
